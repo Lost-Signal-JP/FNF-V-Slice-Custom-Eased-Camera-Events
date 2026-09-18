@@ -1,0 +1,8 @@
+graph editing is pc only
+place all your point before curving them cuz i couldnt code that shit
+give it a proper name
+save it in data/eases/....
+
+open the curve editor in the same menu u use to open chart editor
+
+IMPORTATN!!! it lags a lot when holding a point/curving it

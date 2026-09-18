@@ -1,0 +1,646 @@
+import funkin.ui.MusicBeatState;
+import flixel.FlxSprite;
+import funkin.Paths;
+import flixel.FlxG;
+import funkin.util.WindowUtil;
+import funkin.ui.FullScreenScaleMode;
+import funkin.util.Constants;
+import funkin.audio.FunkinSound;
+import haxe.ui.RuntimeComponentBuilder;
+import funkin.input.Cursor;
+import flixel.FlxCamera;
+import flixel.util.FlxColor;
+import haxe.ui.notifications.NotificationManager;
+import haxe.ui.notifications.NotificationType;
+import haxe.ui.components.DropDown;
+import haxe.ui.data.ArrayDataSource;
+import funkin.ui.mainmenu.MainMenuState;
+import flixel.addons.transition.FlxTransitionableState;
+import haxe.ui.containers.windows.WindowManager;
+import haxe.Json;
+import haxe.io.Bytes;
+import haxe.io.Path;
+import StringTools;
+import Reflect;
+import Math;
+import haxe.ui.containers.dialogs.OpenFileDialog;
+import haxe.ui.containers.dialogs.FileDialogTypes;
+import funkin.PlayerSettings;
+import flixel.tweens.FlxTween;
+import funkin.util.FileUtil;
+import funkin.util.FileWriteMode;
+import haxe.ui.containers.dialogs.Dialogs;
+import openfl.display.BitmapData;
+import openfl.net.FileReference;
+import openfl.events.Event;
+import openfl.events.IOErrorEvent;
+
+class CustomEaseCreator extends MusicBeatState
+{
+    var bg:FlxSprite;
+    var curvePoints:Array<CurvePoint> = [];
+    var nodes:Array<CurveNode> = [];
+    var selectedPoint:CurvePoint = null;
+    var selectedIndex:Int = -1;
+    var curveMode:Bool = false;
+    var graphBG:FlxSprite;
+    var pointSprites:Array<FlxSprite> = [];
+    var curveSprite:FlxSprite;
+    public var curve:Float = 0;
+    var inHandleSprites:Array<FlxSprite> = [];
+    var outHandleSprites:Array<FlxSprite> = [];
+    var currentDirection:String = "in";
+
+    // UI Elements
+    var MENU_BAR;
+    var WINDOW_MANAGER = new WindowManager();
+    var CURVE_EDITOR;
+
+    var UI_CAMERA:FlxCamera;
+    var bgCam:FlxCamera;
+
+    // json stuff
+    var inPoints:Array<CurvePoint> = [];
+    var outPoints:Array<CurvePoint> = [];
+    var inOutPoints:Array<CurvePoint> = [];
+    var _file:FileReference;
+
+    override public function create():Void
+    {
+        super.create();
+        Cursor.show();
+        FlxG.sound.music?.stop();
+
+        if (bgCam == null)
+        {
+            bgCam = new FlxCamera();
+            bgCam.bgColor = 0x00FFFFFF;
+            FlxG.cameras.add(bgCam, false);
+        }
+
+        if (UI_CAMERA == null)
+        {
+            UI_CAMERA = new FlxCamera();
+            UI_CAMERA.bgColor = 0x00FFFFFF;
+            FlxG.cameras.add(UI_CAMERA, false);
+        }
+
+        setUpStuff();
+
+        MENU_BAR = RuntimeComponentBuilder.build(Paths.ui("ease-creator/menubar"));
+        MENU_BAR.findComponent("menuBarTitle").text = "Custom Ease Creator (PROTOTYPE)";
+        MENU_BAR.cameras = [UI_CAMERA];
+        add(MENU_BAR);
+
+        var exitToMenuItem = MENU_BAR.findComponent("exitToMenu");
+        var exit = exitToMenuItem.onClick = () -> {
+            FlxTransitionableState.skipNextTransIn = true;
+            FlxTransitionableState.skipNextTransOut = true;
+            FlxG.switchState(new MainMenuState());
+            WindowUtil.setWindowTitle('Friday Night Funkin\'');
+            var notification = new NotificationManager().addNotification({
+                title: "Wait!",
+                body: "Press F5 to see your changes from the notestyle editor in-game.",
+                type: NotificationType.Warning,
+                expiryMs: 10000
+            });
+            notification.closeButton.onClick = () -> {};
+        }
+        KeybindHandler.addKeybind(["CONTROL", "Q"], exit);
+        
+        CURVE_EDITOR = RuntimeComponentBuilder.build(Paths.ui("ease-creator/windows/curveEditor"));
+        WINDOW_MANAGER.addWindow(CURVE_EDITOR);
+        CURVE_EDITOR.x = 10;
+        CURVE_EDITOR.y = MENU_BAR.height + 10;
+
+        curvePoints.push(new CurvePoint(0, 0));
+        curvePoints.push(new CurvePoint(1, 1));
+        inPoints = clonePoints(curvePoints);
+        outPoints = clonePoints(curvePoints);
+        inOutPoints = clonePoints(curvePoints);
+
+        graphBG = new FlxSprite();
+        graphBG.makeGraphic(500, 500, 0xFF202223);
+        graphBG.cameras = [UI_CAMERA];
+        graphBG.updateHitbox();
+        graphBG.screenCenter();
+        add(graphBG);
+
+        curveSprite = new FlxSprite(graphBG.x, graphBG.y);
+        curveSprite.cameras = [UI_CAMERA];
+        add(curveSprite);
+
+        for (point in curvePoints)     
+        {
+            var dot = new FlxSprite();
+            dot.makeGraphic(10, 10, 0xFFFFFFFF);
+            dot.cameras = [UI_CAMERA];
+            pointSprites.push(dot);
+            add(dot);
+        }
+
+        var addPointBtn = CURVE_EDITOR.findComponent("addPoint");
+        addPointBtn.onClick = function(_)
+        {
+            var insertIndex = curvePoints.length - 1;
+
+            if (selectedIndex != -1 && selectedIndex < curvePoints.length - 1)
+            {
+                insertIndex = selectedIndex + 1;
+            }
+
+            var left = curvePoints[insertIndex - 1];
+            var right = curvePoints[insertIndex];
+
+            var point = new CurvePoint(
+                (left.x + right.x) * 0.5,
+                (left.y + right.y) * 0.5
+            );
+
+            curvePoints.insert(insertIndex, point);
+
+            var dot = new FlxSprite();
+            dot.makeGraphic(10, 10, 0xFFFFFFFF);
+            dot.cameras = [UI_CAMERA];
+
+            pointSprites.insert(insertIndex, dot);
+            add(dot);
+
+            selectedPoint = point;
+            selectedIndex = insertIndex;
+        };
+
+        var deletePointBtn = CURVE_EDITOR.findComponent("deletePoint");
+        deletePointBtn.onClick = function(_)
+        {
+            if (selectedIndex <= 0 || selectedIndex >= curvePoints.length - 1) return;
+    
+            remove(pointSprites[selectedIndex], true);
+
+            pointSprites[selectedIndex].destroy();
+
+            pointSprites.splice(selectedIndex, 1);
+            curvePoints.splice(selectedIndex, 1);
+
+            selectedPoint = null;
+            selectedIndex = -1;
+
+            redrawCurve();
+        };
+
+        var curveModeBtn = CURVE_EDITOR.findComponent("curveMode");
+        curveModeBtn.onChange = function(_)
+        {
+            curveMode = curveModeBtn.selected;
+        }
+
+        var pointXStepper = CURVE_EDITOR.findComponent("pointX");
+        pointXStepper.onChange = function(_)
+        {
+            if (selectedPoint != null && (selectedIndex > 0 && selectedIndex < curvePoints.length - 1))
+            {
+                selectedPoint.x = pointXStepper.value;
+                redrawCurve();
+            }
+        }
+
+        var pointYStepper = CURVE_EDITOR.findComponent("pointY");
+        pointYStepper.onChange = function(_)
+        {
+            if (selectedPoint != null)
+            {
+                selectedPoint.y = pointYStepper.value;
+                redrawCurve();
+            }
+        }
+
+        redrawCurve();
+
+        var directionDropdown = CURVE_EDITOR.findComponent("easeDirection");
+
+        directionDropdown.dataSource.add({text: 'In', id: 'in'});
+        directionDropdown.dataSource.add({text: 'Out', id: 'out'});
+        directionDropdown.dataSource.add({text: 'In Out', id: 'inOut'});
+
+        directionDropdown.selectedItem = directionDropdown.dataSource.get(0);
+        directionDropdown.onChange = function(_)
+        {
+            saveCurrentDirection();
+
+            currentDirection = directionDropdown.selectedItem.id;
+
+            switch (currentDirection)
+            {
+                case "in":
+                    curvePoints = clonePoints(inPoints);
+
+                case "out":
+                    curvePoints = clonePoints(outPoints);
+
+                case "inOut":
+                    curvePoints = clonePoints(inOutPoints);
+            }
+
+            rebuildPointSprites();
+            redrawCurve();
+        }
+
+        var saveBtn = CURVE_EDITOR.findComponent("saveCurve");
+        saveBtn.onClick = function(_)
+        {
+            saveEase();
+        };
+
+        var loadBtn = CURVE_EDITOR.findComponent("loadCurve");
+        loadBtn.onClick = function(_)
+        {
+            FileUtil.browseFileReference(function(fileReference:FileReference)
+            {
+                var data:Dynamic = Json.parse(fileReference.data.toString());
+
+                inPoints = deserializePoints(data.easeIn.points);
+                outPoints = deserializePoints(data.easeOut.points);
+                inOutPoints = deserializePoints(data.easeInOut.points);
+
+                var directionDropdown = CURVE_EDITOR.findComponent("easeDirection");
+
+                CURVE_EDITOR.findComponent("easeName").text = data.name;
+
+                switch (directionDropdown.selectedItem.id)
+                {
+                    case "in":
+                        curvePoints = inPoints;
+
+                    case "out":
+                        curvePoints = outPoints;
+
+                    case "inOut":
+                        curvePoints = inOutPoints;
+                }
+
+                rebuildPointSprites();
+
+                selectedPoint = null;
+                selectedIndex = -1;
+
+                redrawCurve();
+            });
+        };
+    }
+
+    override function update(elapsed:Float)
+    {
+        super.update(elapsed);
+
+        if (FlxG.keys.justPressed.F4)
+        {
+            WindowUtil.setWindowTitle('Friday Night Funkin\'');
+            Cursor.hide();
+            FlxG.sound.music?.stop();
+            return;
+        }
+
+        var mousePos = FlxG.mouse.getWorldPosition(UI_CAMERA);
+
+        var deleteBtn = CURVE_EDITOR.findComponent("deletePoint");
+        var curveBtn = CURVE_EDITOR.findComponent("curveMode");
+        var stepX = CURVE_EDITOR.findComponent("pointX");
+        var stepY = CURVE_EDITOR.findComponent("pointY");
+
+        var mouseOnUI =
+            deleteBtn.overlapsPoint(mousePos)
+            || curveBtn.overlapsPoint(mousePos)
+            || stepX.overlapsPoint(mousePos)
+            || stepY.overlapsPoint(mousePos);
+
+        if (FlxG.mouse.justPressed)
+        {
+            if (!mouseOnUI)
+            {
+                selectedPoint = null;
+                selectedIndex = -1;
+
+                for (i in 0...pointSprites.length)
+                {
+                    pointSprites[i].color = FlxColor.WHITE;
+
+                    if (pointSprites[i].overlapsPoint(mousePos))
+                    {
+                        selectedPoint = curvePoints[i];
+                        selectedIndex = i;
+
+                        pointSprites[i].color = FlxColor.LIME;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (selectedPoint != null && FlxG.mouse.pressed && !mouseOnUI)
+        {
+            if (!curveMode)
+            {
+                if (selectedIndex > 0 && selectedIndex < curvePoints.length - 1)
+                {
+                    selectedPoint.x = (FlxG.mouse.x - graphBG.x) / graphBG.width;
+                    selectedPoint.x = Math.max(0, Math.min(1, selectedPoint.x));
+                }
+
+                selectedPoint.y = 1 - ((FlxG.mouse.y - graphBG.y) / graphBG.height);
+                selectedPoint.y = Math.max(0, Math.min(1, selectedPoint.y));
+            }
+            else
+            {
+                var mx = (FlxG.mouse.x - graphBG.x) / graphBG.width;
+                var my = 1 - ((FlxG.mouse.y - graphBG.y) / graphBG.height);
+
+                selectedPoint.outX = mx;
+                selectedPoint.outY = my;
+
+                selectedPoint.inX = selectedPoint.x - (mx - selectedPoint.x);
+                selectedPoint.inY = selectedPoint.y - (my - selectedPoint.y);
+            }
+
+            redrawCurve();
+        }
+
+        if (selectedPoint != null)
+        {
+            stepX.pos = selectedPoint.x;
+            stepY.pos = selectedPoint.y;
+        }
+
+        for (i in 0...curvePoints.length)
+        {
+            var point = curvePoints[i];
+            var dot = pointSprites[i];
+
+            dot.x = graphBG.x + point.x * graphBG.width - 5;
+            dot.y = graphBG.y + (1 - point.y) * graphBG.height - 5;
+        }
+    }
+
+    function serializePoints(points:Array<CurvePoint>):Array<Dynamic>
+    {
+        return points.map(function(p)
+        {
+            return {
+                x: p.x,
+                y: p.y,
+                inX: p.inX,
+                inY: p.inY,
+                outX: p.outX,
+                outY: p.outY
+            };
+        });
+    }
+
+    function rebuildPointSprites():Void
+    {
+        for (sprite in pointSprites)
+        {
+            remove(sprite, true);
+            sprite.destroy();
+        }
+
+        pointSprites = [];
+
+        for (point in curvePoints)
+        {
+            var dot = new FlxSprite();
+            dot.makeGraphic(10, 10, 0xFFFFFFFF);
+            dot.cameras = [UI_CAMERA];
+
+            pointSprites.push(dot);
+            add(dot);
+        }
+    }
+
+    function deserializePoints(data:Array<Dynamic>):Array<CurvePoint>
+    {
+        var result:Array<CurvePoint> = [];
+
+        for (p in data)
+        {
+            var point = new CurvePoint(p.x, p.y);
+
+            point.inX = p.inX;
+            point.inY = p.inY;
+            point.outX = p.outX;
+            point.outY = p.outY;
+
+            result.push(point);
+        }
+
+        return result;
+    }
+
+    function redrawCurve()
+    {
+        var w = Std.int(graphBG.width);
+        var h = Std.int(graphBG.height);
+
+        var bd = new BitmapData(w, h, false, 0xFF202223);
+
+        if (!curveMode)
+        {
+            if (curvePoints.length >= 2)
+            {
+                for (i in 0...curvePoints.length - 1)
+                {
+                    var p1 = curvePoints[i];
+                    var p2 = curvePoints[i + 1];
+
+                    drawLineOnBitmap(
+                        bd,
+                        Std.int(p1.x * (w - 1)),
+                        Std.int((1 - p1.y) * (h - 1)),
+                        Std.int(p2.x * (w - 1)),
+                        Std.int((1 - p2.y) * (h - 1)),
+                        0xFFFFFFFF
+                    );
+                }
+            }
+        }
+        else
+        {
+            for (i in 0...curvePoints.length - 1)
+            {
+                var p0 = curvePoints[i];
+                var p1 = curvePoints[i + 1];
+
+                var lastX = p0.x * (w - 1);
+                var lastY = (1 - p0.y) * (h - 1);
+
+                for (step in 1...100)
+                {
+                    var t = step / 99.0;
+                    var mt = 1 - t;
+
+                    var px = mt * mt * mt * (p0.x * (w - 1))
+                        + 3 * mt * mt * t * (p0.outX * (w - 1))
+                        + 3 * mt * t * t * (p1.inX * (w - 1))
+                        + t * t * t * (p1.x * (w - 1));
+
+                    var py = mt * mt * mt * ((1 - p0.y) * (h - 1))
+                        + 3 * mt * mt * t * ((1 - p0.outY) * (h - 1))
+                        + 3 * mt * t * t * ((1 - p1.inY) * (h - 1))
+                        + t * t * t * ((1 - p1.y) * (h - 1));
+
+                    drawLineOnBitmap(
+                        bd,
+                        Std.int(lastX),
+                        Std.int(lastY),
+                        Std.int(px),
+                        Std.int(py),
+                        0xFFFFFFFF
+                    );
+
+                    lastX = px;
+                    lastY = py;
+                }
+            }
+        }
+
+        curveSprite.loadGraphic(bd);
+    }
+
+    function saveCurrentDirection():Void
+    {
+        switch (currentDirection)
+        {
+            case "in":
+                inPoints = clonePoints(curvePoints);
+
+            case "out":
+                outPoints = clonePoints(curvePoints);
+
+            case "inOut":
+                inOutPoints = clonePoints(curvePoints);
+        }
+    }
+
+    function clonePoints(points:Array<CurvePoint>):Array<CurvePoint>
+    {
+        var result:Array<CurvePoint> = [];
+
+        for (p in points)
+        {
+            var cp = new CurvePoint(p.x, p.y);
+
+            cp.inX = p.inX;
+            cp.inY = p.inY;
+            cp.outX = p.outX;
+            cp.outY = p.outY;
+
+            result.push(cp);
+        }
+
+        return result;
+    }
+
+    function saveEase()
+    {
+        saveCurrentDirection();
+        var easeNameInput = CURVE_EDITOR.findComponent("easeName");
+
+        var data = {
+            name: easeNameInput.text,
+            easeIn: {
+                points: serializePoints(inPoints)
+            },
+            easeOut: {
+                points: serializePoints(outPoints)
+            },
+            easeInOut: {
+                points: serializePoints(inOutPoints)
+            }
+        };
+
+        var json:String = Json.stringify(data, null, "\t");
+
+        _file = new FileReference();
+        _file.save(json, easeNameInput.text.toLowerCase() + ".json");
+    }
+
+    function drawLineOnBitmap(bd:BitmapData, x0:Int, y0:Int, x1:Int, y1:Int, color:Int)
+    {
+        var dx = Math.abs(x1 - x0);
+        var sx = x0 < x1 ? 1 : -1;
+
+        var dy = -Math.abs(y1 - y0);
+        var sy = y0 < y1 ? 1 : -1;
+
+        var err = dx + dy;
+
+        while (true)
+        {
+            if (x0 >= 0 && x0 < bd.width && y0 >= 0 && y0 < bd.height)
+            {
+                bd.setPixel32(x0, y0, color);
+            }
+
+            if (x0 == x1 && y0 == y1) break;
+
+            var e2 = 2 * err;
+
+            if (e2 >= dy)
+            {
+                err += dy;
+                x0 += sx;
+            }
+
+            if (e2 <= dx)
+            {
+                err += dx;
+                y0 += sy;
+            }
+        }
+    }
+
+    function setUpStuff()
+    {
+        bg = new FlxSprite().loadGraphic(Paths.image('menuBGMagenta'));
+        bg.setGraphicSize(FlxG.width, FlxG.height);
+        bg.updateHitbox();
+        bg.screenCenter();
+        bg.cameras = [bgCam];
+        add(bg);
+    }
+}
+
+class CurvePoint
+{
+    public var x:Float;
+    public var y:Float;
+
+    public var inX:Float;
+    public var inY:Float;
+
+    public var outX:Float;
+    public var outY:Float;
+
+    public function new(x:Float, y:Float)
+    {
+        this.x = x;
+        this.y = y;
+
+        inX = x;
+        inY = y;
+
+        outX = x;
+        outY = y;
+    }
+}
+
+class CurveNode
+{
+    public var point:CurvePoint;
+    public var sprite:FlxSprite;
+
+    public function new(point, sprite)
+    {
+        this.point = point;
+        this.sprite = sprite;
+    }
+}

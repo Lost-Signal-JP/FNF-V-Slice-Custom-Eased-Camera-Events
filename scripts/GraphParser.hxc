@@ -1,0 +1,113 @@
+import haxe.Json;
+import haxe.ds.StringMap;
+import flixel.util.FlxSort;
+import funkin.Paths;
+import funkin.util.assets.DataAssets;
+
+class GraphParser
+{
+    public static function listAllEases()
+    {
+        var files = DataAssets.listDataFilesInPath('eases/', '.json');
+        var easeMap:StringMap<String> = new StringMap();
+
+        for (file in files)
+        {
+            var json = Json.parse(Assets.getText(Paths.json('eases/' + file)));
+            easeMap.set(json.name, file);
+        }
+        
+        return easeMap;
+    }
+
+    public static function parseEase(name:String, direction:String): (Float) -> Float
+    {
+        if (!Assets.exists(Paths.json('eases/' + name)))
+            return function(t:Float) return t;
+
+        var raw:String = Assets.getText(Paths.json('eases/' + name));
+        var data:EaseData = Json.parse(raw);
+
+        var points:Array<EasePoint> = switch (direction)
+        {
+            case "in":    data.easeIn.points;
+            case "out":   data.easeOut.points;
+            case "inOut": data.easeInOut.points;
+            default:      data.easeIn.points;
+        };
+
+        return function(t:Float):Float
+        {
+            return evaluateCurve(points, t);
+        };
+    }
+
+    static function evaluateCurve(points:Array<EasePoint>, t:Float):Float
+    {
+        points.sort(function(a, b) {
+            return FlxSort.byValues(FlxSort.ASCENDING, a.x, b.x);
+        });
+
+        for (i in 0...points.length - 1)
+        {
+            var p0 = points[i];
+            var p1 = points[i + 1];
+
+            if (t >= p0.x && t <= p1.x)
+            {
+                var u = solveBezierX(t, p0.x, p0.outX, p1.inX, p1.x);
+                return cubicBezier(u, p0.y, p0.outY, p1.inY, p1.y);
+            }
+        }
+
+        return t;
+    }
+
+    static function solveBezierX(targetX:Float, p0:Float, p1:Float, p2:Float, p3:Float):Float
+    {
+        var low = 0.0;
+        var high = 1.0;
+
+        for (i in 0...20)
+        {
+            var mid = (low + high) * 0.5;
+            var x = cubicBezier(mid, p0, p1, p2, p3);
+
+            if (x < targetX)
+                low = mid;
+            else
+                high = mid;
+        }
+
+        return (low + high) * 0.5;
+    }
+
+    static inline function cubicBezier(t:Float, p0:Float, p1:Float, p2:Float, p3:Float):Float
+    {
+        var mt = 1 - t;
+        return (mt * mt * mt * p0)
+            + (3 * mt * mt * t * p1)
+            + (3 * mt * t * t * p2)
+            + (t * t * t * p3);
+    }
+}
+
+typedef EasePoint = {
+    var x:Float;
+    var y:Float;
+    var inX:Float;
+    var inY:Float;
+    var outX:Float;
+    var outY:Float;
+}
+
+typedef EaseDirection = {
+    var points:Array<EasePoint>;
+}
+
+typedef EaseData = {
+    var name:String;
+    var easeIn:EaseDirection;
+    var easeOut:EaseDirection;
+    var easeInOut:EaseDirection;
+}

@@ -1,0 +1,18 @@
+import flixel.FlxG;
+import funkin.modding.module.Module;
+import funkin.ui.debug.DebugMenuSubState;
+import funkin.modding.base.ScriptedMusicBeatState;
+
+class CurveEditorInjection extends Module
+{
+	public function new() { super('CurveEditorInjection'); }
+
+	override public function onSubStateOpenEnd(event:StateChangeScriptEvent)
+	{
+		if (Std.isOfType(event.targetState, DebugMenuSubState))
+		{
+			event.targetState.createItem("Curve Editor", ()->FlxG.switchState(new CustomEaseCreator()));
+		}
+	}
+
+}
